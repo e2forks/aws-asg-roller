@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
@@ -93,6 +94,66 @@ func awsGetHostnames(svc ec2iface.EC2API, ids []string) ([]string, error) {
 		}
 	}
 	return hostnames, nil
+}
+func awsEc2DeleteTags(svc ec2iface.EC2API, ids []string, key string) error {
+	ec2DeleteTags := &ec2.DeleteTagsInput{
+		Resources: aws.StringSlice(ids),
+		Tags: []*ec2.Tag{
+			{
+				Key: aws.String(key),
+			},
+		},
+	}
+	_, err := svc.DeleteTags(ec2DeleteTags)
+	if err != nil {
+		return fmt.Errorf("Unable to get Delete Tag for node %v: %v", ids, err)
+	}
+	return nil
+}
+func awsAsgCreateOrUpdateTags(svc autoscalingiface.AutoScalingAPI, asg *autoscaling.Group, key string, value string) error {
+	input := &autoscaling.CreateOrUpdateTagsInput{
+		Tags: []*autoscaling.Tag{
+			{
+				Key:               aws.String(key),
+				PropagateAtLaunch: aws.Bool(true),
+				ResourceId:        asg.AutoScalingGroupName,
+				ResourceType:      aws.String("auto-scaling-group"),
+				Value:             aws.String(value),
+			},
+		},
+	}
+	_, err := svc.CreateOrUpdateTags(input)
+	if err != nil {
+		return fmt.Errorf("Unable to get Create/Update Tag for asg %v: %v", asg.AutoScalingGroupName, err)
+	}
+	return nil
+}
+func awsAsgDeleteTags(svc autoscalingiface.AutoScalingAPI, asg *autoscaling.Group, key string) error {
+	asgDeleteTags := &autoscaling.DeleteTagsInput{
+		Tags: []*autoscaling.Tag{
+			{
+				Key:          aws.String(key),
+				ResourceId:   asg.AutoScalingGroupName,
+				ResourceType: aws.String("auto-scaling-group"),
+			},
+		},
+	}
+	_, err := svc.DeleteTags(asgDeleteTags)
+	if err != nil {
+		if aerr, ok := err.(awserr.Error); ok {
+			switch aerr.Code() {
+			case autoscaling.ErrCodeResourceInUseFault:
+				// don't block but cannot throw error anymore
+				go func(svc autoscalingiface.AutoScalingAPI, asg *autoscaling.Group, key string) {
+					time.Sleep(300 * time.Millisecond)
+					awsAsgDeleteTags(svc, asg, key)
+				}(svc, asg, key)
+			default:
+				return fmt.Errorf("Unable to get Create/Update Tag for asg %v: %v", asg.AutoScalingGroupName, err)
+			}
+		}
+	}
+	return nil
 }
 
 func awsDescribeGroups(svc autoscalingiface.AutoScalingAPI, names []string) ([]*autoscaling.Group, error) {

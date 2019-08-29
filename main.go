@@ -43,9 +43,12 @@ func main() {
 
 	// infinite loop
 	for {
-		err = adjust(asgList, ec2Svc, asgSvc, readinessHandler, originalDesired)
+		msg, err := adjust(asgList, ec2Svc, asgSvc, readinessHandler, originalDesired)
 		if err != nil {
 			log.Printf("Error adjusting AutoScaling Groups: %v", err)
+		}
+		if msg != "" {
+			log.Println(msg)
 		}
 		// delay with each loop
 		log.Printf("Sleeping %d seconds\n", checkDelay)
