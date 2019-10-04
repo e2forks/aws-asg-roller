@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/autoscaling"
@@ -15,13 +16,11 @@ const (
 )
 
 // adjust runs a single adjustment in the loop to update an ASG in a rolling fashion to latest launch config
-func adjust(asgList []string, ec2Svc ec2iface.EC2API, asgSvc autoscalingiface.AutoScalingAPI, readinessHandler readiness, originalDesired map[string]int64) (string, error) {
-	// return msg
-	msg := ""
+func adjust(asgList []string, ec2Svc ec2iface.EC2API, asgSvc autoscalingiface.AutoScalingAPI, readinessHandler readiness, originalDesired map[string]int64) error {
 	// get information on all of the groups
 	asgs, err := awsDescribeGroups(asgSvc, asgList)
 	if err != nil {
-		return "", fmt.Errorf("Unexpected error describing ASGs, skipping: %v", err)
+		return fmt.Errorf("Unexpected error describing ASGs, skipping: %v", err)
 	}
 	asgMap := map[string]*autoscaling.Group{}
 	// get information on all of the ec2 instances
@@ -29,39 +28,33 @@ func adjust(asgList []string, ec2Svc ec2iface.EC2API, asgSvc autoscalingiface.Au
 	for _, asg := range asgs {
 		oldI, newI, err := groupInstances(asg, ec2Svc)
 		if err != nil {
-			return "", fmt.Errorf("unable to group instances into new and old: %v", err)
+			return fmt.Errorf("unable to group instances into new and old: %v", err)
 		}
 		// if there are no outdated instances skip updating
 		if len(oldI) == 0 {
-			// remove tag: cluster-autoscaler.kubernetes.io/scale-down-disabled
-			// so autoscaler can function normally again
-			awsAsgDeleteTags(asgSvc, asg, "cluster-autoscaler.kubernetes.io/scale-down-disabled")
-			err := awsEc2DeleteTags(ec2Svc, mapInstancesIds(asg.Instances), "cluster-autoscaler.kubernetes.io/scale-down-disabled")
+			log.Printf("[%s] ok\n", *asg.AutoScalingGroupName)
+			err := ensureNoScaleDownDisabledAnnotation(ec2Svc, mapInstancesIds(asg.Instances))
 			if err != nil {
-				msg += fmt.Sprintln("Skipped: %v", err)
+				log.Printf("[%s] Unable to update node annotations: %v\n", *asg.AutoScalingGroupName, err)
 			}
 			continue
 		}
+
+		log.Printf("[%s] need updates: %d\n", *asg.AutoScalingGroupName, len(oldI))
 
 		asgMap[*asg.AutoScalingGroupName] = asg
 		instances = append(instances, oldI...)
 		instances = append(instances, newI...)
 
-		// set Tag: cluster-autoscaler.kubernetes.io/scale-down-disabled to true
-		// so that autoscaler will not scale down any new nodes
-		err = awsAsgCreateOrUpdateTags(asgSvc, asg, "cluster-autoscaler.kubernetes.io/scale-down-disabled", "true")
-		if err != nil {
-			msg += fmt.Sprintln("Skipped: %v", err)
-		}
 	}
 	// no instances no work needed
 	if len(instances) == 0 {
-		return "All asgs are up-to-date. No work required.", nil
+		return nil
 	}
 	ids := mapInstancesIds(instances)
 	hostnames, err := awsGetHostnames(ec2Svc, ids)
 	if err != nil {
-		return "", fmt.Errorf("Unable to get aws hostnames for ids %v: %v", ids, err)
+		return fmt.Errorf("Unable to get aws hostnames for ids %v: %v", ids, err)
 	}
 	hostnameMap := map[string]string{}
 	for i, id := range ids {
@@ -75,9 +68,14 @@ func adjust(asgList []string, ec2Svc ec2iface.EC2API, asgSvc autoscalingiface.Au
 	// keep keyed references to the ASGs
 	for _, asg := range asgMap {
 		newDesiredA, newOriginalA, terminateID, err := calculateAdjustment(asg, ec2Svc, hostnameMap, readinessHandler, originalDesired[*asg.AutoScalingGroupName])
+		log.Printf("[%s] desired: %d original: %d", *asg.AutoScalingGroupName, newDesiredA, newOriginalA)
+		if err != nil {
+			log.Printf("[%s] error: %v\n", *asg.AutoScalingGroupName, err)
+		}
 		newDesired[*asg.AutoScalingGroupName] = newDesiredA
 		newOriginalDesired[*asg.AutoScalingGroupName] = newOriginalA
 		if terminateID != "" {
+			log.Printf("[%s] Scheduled termination: %s", *asg.AutoScalingGroupName, terminateID)
 			newTerminate[*asg.AutoScalingGroupName] = terminateID
 		}
 		errors[asg.AutoScalingGroupName] = err
@@ -88,20 +86,32 @@ func adjust(asgList []string, ec2Svc ec2iface.EC2API, asgSvc autoscalingiface.Au
 	}
 	// adjust current desired
 	for asg, desired := range newDesired {
+		log.Printf("[%s] set desired instances: %d\n", asg, desired)
 		err = setAsgDesired(asgSvc, asgMap[asg], desired)
 		if err != nil {
-			return "", fmt.Errorf("Error setting desired to %d for ASG %s: %v", desired, asg, err)
+			return fmt.Errorf("Error setting desired to %d for ASG %s: %v", desired, asg, err)
 		}
 	}
 	// terminate nodes
 	for asg, id := range newTerminate {
+		log.Printf("[%s] terminating node: %s\n", asg, id)
 		// all new config instances are ready, terminate an old one
 		err = awsTerminateNode(asgSvc, id)
 		if err != nil {
-			return "", fmt.Errorf("Error terminating node %s in ASG %s: %v", id, asg, err)
+			return fmt.Errorf("Error terminating node %s in ASG %s: %v", id, asg, err)
 		}
 	}
-	return msg, nil
+	return nil
+}
+
+// ensureNoScaleDownDisabledAnnotation remove any "cluster-autoscaler.kubernetes.io/scale-down-disabled"
+// annotations in the nodes as no update is required anymore.
+func ensureNoScaleDownDisabledAnnotation(ec2Svc ec2iface.EC2API, ids []string) error {
+	hostnames, err := awsGetHostnames(ec2Svc, ids)
+	if err != nil {
+		return fmt.Errorf("Unable to get aws hostnames for ids %v: %v", ids, err)
+	}
+	return removeScaleDownDisabledAnnotation(hostnames)
 }
 
 // calculateAdjustment calculates the new settings for the desired number, and which node (if any) to terminate
@@ -175,12 +185,16 @@ func calculateAdjustment(asg *autoscaling.Group, ec2Svc ec2iface.EC2API, hostnam
 		for _, i := range ids {
 			hostnames = append(hostnames, hostnameMap[i])
 		}
+		_, err = setScaleDownDisabledAnnotation(hostnames)
+		if err != nil {
+			log.Printf("Unable to set disabled scale down annotations: %v", err)
+		}
 		unReadyCount, err = readinessHandler.getUnreadyCount(hostnames, ids)
 		if err != nil {
 			return desired, originalDesired, "", fmt.Errorf("Error getting readiness new node status: %v", err)
 		}
 		if unReadyCount > 0 {
-			return desired, originalDesired, "", nil
+			return desired, originalDesired, "", fmt.Errorf("[%s] Nodes not ready: %d", *asg.AutoScalingGroupName, unReadyCount)
 		}
 	}
 	candidate := *oldInstances[0].InstanceId
