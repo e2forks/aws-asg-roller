@@ -1,12 +1,15 @@
 package main
 
 import (
+	"flag"
 	"fmt"
-	"log"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -14,9 +17,25 @@ const (
 )
 
 func main() {
+
+	// handles arg flags
+	debug := flag.Bool("debug", false, "sets log level to debug")
+	human := flag.Bool("human", false, "sets log output to human readable format")
+	flag.Parse()
+
+	// default logging level is info
+	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	if *debug {
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	}
+	if *human {
+		log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+	}
+
 	asgList := strings.Split(os.Getenv("ROLLER_ASG"), ",")
 	if asgList == nil || len(asgList) == 0 {
-		log.Fatal("Must supply at least one ASG in ROLLER_ASG environment variable")
+		log.Fatal().Msgf("Must supply at least one ASG in ROLLER_ASG environment variable")
 	}
 
 	// get config env
@@ -25,13 +44,13 @@ func main() {
 	// get a kube connection
 	readinessHandler, err := kubeGetReadinessHandler(ignoreDaemonSets, deleteLocalData)
 	if err != nil {
-		log.Fatalf("Error getting kubernetes readiness handler when required: %v", err)
+		log.Fatal().Err(err).Msgf("Error getting kubernetes readiness handler when required: %v", err)
 	}
 
 	// get the AWS sessions
 	ec2Svc, asgSvc, err := awsGetServices()
 	if err != nil {
-		log.Fatalf("Unable to create an AWS session: %v", err)
+		log.Fatal().Err(err).Msgf("Unable to create an AWS session: %v", err)
 	}
 
 	// to keep track of original target sizes during rolling updates
@@ -39,17 +58,17 @@ func main() {
 
 	checkDelay, err := getDelay()
 	if err != nil {
-		log.Fatalf("Unable to get delay: %s", err.Error())
+		log.Fatal().Err(err).Msgf("Unable to get delay: %s", err.Error())
 	}
 
 	// infinite loop
 	for {
 		err := adjust(asgList, ec2Svc, asgSvc, readinessHandler, originalDesired)
 		if err != nil {
-			log.Printf("Error adjusting AutoScaling Groups: %v", err)
+			log.Warn().Msgf("Error adjusting AutoScaling Groups: %v", err)
 		}
 		// delay with each loop
-		log.Printf("Sleeping %d seconds\n", checkDelay)
+		log.Info().Msgf("Sleeping %d seconds\n", checkDelay)
 		time.Sleep(time.Duration(checkDelay) * time.Second)
 	}
 }

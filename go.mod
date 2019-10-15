@@ -22,12 +22,13 @@ require (
 	github.com/openshift/kubernetes-drain v0.0.0-20180831174519-c2e51be1758e
 	github.com/petar/GoLLRB v0.0.0-20130427215148-53be0d36a84c
 	github.com/peterbourgon/diskv v2.0.1+incompatible
+	github.com/rs/zerolog v1.15.0
 	github.com/spf13/pflag v1.0.3
 	github.com/stretchr/testify v1.3.0 // indirect
-	golang.org/x/crypto v0.0.0-20180808211826-de0752318171
-	golang.org/x/net v0.0.0-20180724234803-3673e40ba225
+	golang.org/x/crypto v0.0.0-20190308221718-c2843e01d9a2
+	golang.org/x/net v0.0.0-20190311183353-d8887717615a
 	golang.org/x/oauth2 v0.0.0-20170412232759-a6bd8cefa181
-	golang.org/x/sys v0.0.0-20181107165924-66b7b1311ac8
+	golang.org/x/sys v0.0.0-20190215142949-d0b11bdaac8a
 	golang.org/x/text v0.3.0
 	golang.org/x/time v0.0.0-20161028155119-f51c12702a4d
 	google.golang.org/appengine v1.3.0
