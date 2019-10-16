@@ -176,6 +176,30 @@ func setScaleDownDisabledAnnotation(hostnames []string) ([]string, error) {
 	}
 	return annotated, nil
 }
+
+// setScaleDownDisabledAnnotation set the "cluster-autoscaler.kubernetes.io/scale-down-disabled" annotation
+// on the list of nodes if required. Returns a list of hostname where the annotation
+// is applied.
+func flagK8sNodeNoScaleDown(clientset *kubernetes.Clientset, hostname string) error {
+	// get the node reference - first need the hostname
+	var (
+		key = "cluster-autoscaler.kubernetes.io/scale-down-disabled"
+	)
+	nodes := clientset.CoreV1().Nodes()
+	node, err := nodes.Get(hostname, v1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("Unexpected error getting kubernetes node %s: %v", hostname, err)
+	}
+
+	annotations := node.GetAnnotations()
+	if value := annotations[key]; value != "true" {
+		annotations[key] = "true"
+		node.SetAnnotations(annotations)
+		nodes.Update(node)
+	}
+	return nil
+}
+
 func removeScaleDownDisabledAnnotation(hostnames []string) error {
 	// get the node reference - first need the hostname
 	var (

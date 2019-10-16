@@ -13,6 +13,11 @@ import (
 	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
 )
 
+type AwsSvc struct {
+	ec2Svc ec2iface.EC2API
+	asgSvc autoscalingiface.AutoScalingAPI
+}
+
 func setAsgDesired(svc autoscalingiface.AutoScalingAPI, asg *autoscaling.Group, count int64) error {
 	// increase the desired capacity by 1
 	desiredInput := &autoscaling.SetDesiredCapacityInput{
